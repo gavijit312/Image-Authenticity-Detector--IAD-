@@ -8,9 +8,7 @@ from pathlib import Path
 from PIL import Image
 from multiprocessing import freeze_support
 
-# =========================
-# CONFIG
-# =========================
+
 BATCH_SIZE = 32
 EPOCHS = 25
 LR = 1e-4
@@ -22,9 +20,7 @@ USE_CUDA = DEVICE.type == "cuda"
 AI_DIR = "Ai_generated_dataset"
 REAL_DIR = "real_dataset"
 
-# =========================
-# TRANSFORMS
-# =========================
+
 train_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.RandomResizedCrop(224),
@@ -46,9 +42,7 @@ val_transform = transforms.Compose([
                          [0.229, 0.224, 0.225])
 ])
 
-# =========================
-# DATASET
-# =========================
+
 class BinaryImageDataset(Dataset):
     def __init__(self, ai_root, real_root):
         self.samples = []
@@ -87,9 +81,7 @@ class TransformDataset(Dataset):
         return self.transform(img), label
 
 
-# =========================
-# MAIN
-# =========================
+
 def main():
 
     base_data = BinaryImageDataset(AI_DIR, REAL_DIR)
@@ -99,7 +91,7 @@ def main():
 
     print(f"Total images: {len(base_data)}")
 
-    # Split dataset
+   
     val_size = int(len(base_data) * VAL_SPLIT)
     val_size = max(1, min(val_size, len(base_data) - 1))
     train_size = len(base_data) - val_size
@@ -113,9 +105,7 @@ def main():
     train_data = TransformDataset(train_subset, train_transform)
     val_data = TransformDataset(val_subset, val_transform)
 
-    # =========================
-    # CLASS IMBALANCE HANDLING
-    # =========================
+    
     train_labels = [base_data.samples[i][1] for i in train_subset.indices]
 
     class_counts = [train_labels.count(0), train_labels.count(1)]
@@ -124,14 +114,12 @@ def main():
     weights = [1.0 / class_counts[label] for label in train_labels]
     sampler = WeightedRandomSampler(weights, len(weights))
 
-    # =========================
-    # DATALOADER (FIXED)
-    # =========================
+    
     train_loader = DataLoader(
         train_data,
         batch_size=BATCH_SIZE,
         sampler=sampler,
-        num_workers=0,  # 🔥 important for Windows
+        num_workers=0,  
         pin_memory=USE_CUDA
     )
 
@@ -139,16 +127,16 @@ def main():
         val_data,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=0,  # 🔥 important
+        num_workers=0, 
         pin_memory=USE_CUDA
     )
 
     print("Classes: ['ai_generated', 'real']")
     print("Training started...\n")
 
-    # =========================
-    # MODEL
-    # =========================
+    
+  
+    
     model = models.efficientnet_b4(weights=EfficientNet_B4_Weights.DEFAULT)
 
     in_features = model.classifier[1].in_features
@@ -159,25 +147,24 @@ def main():
 
     model = model.to(DEVICE)
 
-    # =========================
-    # LOSS + OPTIMIZER
-    # =========================
+    
+    
+
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     scaler = torch.amp.GradScaler(enabled=USE_CUDA)
 
-    # =========================
-    # TRAINING LOOP
-    # =========================
+   
+    
     best_acc = 0
     patience = 5
     counter = 0
 
     for epoch in range(EPOCHS):
 
-        # ---- TRAIN ----
+        
         model.train()
         running_loss = 0
 
@@ -208,7 +195,7 @@ def main():
 
         train_loss = running_loss / len(train_loader)
 
-        # ---- VALIDATION ----
+       
         model.eval()
         correct = 0
         total = 0
@@ -231,7 +218,7 @@ def main():
         print(f"\nEpoch [{epoch+1}/{EPOCHS}] "
               f"Loss: {train_loss:.4f} | Val Acc: {val_acc:.2f}%\n")
 
-        # Save best model
+     
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), "best_model.pth")
@@ -244,12 +231,11 @@ def main():
             print("⛔ Early stopping triggered")
             break
 
-    print(f"\n🔥 Training Complete! Best Accuracy: {best_acc:.2f}%")
+    print(f"\n Training Complete! Best Accuracy: {best_acc:.2f}%")
 
 
-# ========================
-# ENTRY
-# ========================
+
+
 if __name__ == "__main__":
     freeze_support()
     main()
