@@ -1,9 +1,11 @@
+import io
+from pathlib import Path
+
 import torch
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from torchvision import transforms, models
-import io
 
 app = FastAPI()
 
@@ -16,7 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DEVICE = torch.device("cpu")
+BASE_DIR = Path(__file__).resolve().parent
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CLASS_NAMES = ["AI Generated", "Real Image"]
 
 # Load model
 model = models.efficientnet_b4(weights=None)
@@ -25,7 +29,37 @@ model.classifier[1] = torch.nn.Sequential(
     torch.nn.Linear(model.classifier[1].in_features, 2)
 )
 
-model.load_state_dict(torch.load("best_model.pth", map_location=DEVICE))
+candidate_paths = [
+    BASE_DIR / "best_model.pth",
+    BASE_DIR.parent / "best_model.pth",
+]
+
+selected_model_path = None
+last_error = None
+
+for path in candidate_paths:
+    if not path.exists() or path.stat().st_size == 0:
+        continue
+    try:
+        state_dict = torch.load(path, map_location=DEVICE)
+        model.load_state_dict(state_dict)
+        selected_model_path = path
+        break
+    except Exception as exc:
+        last_error = exc
+
+if selected_model_path is None:
+    if last_error is not None:
+        raise RuntimeError(
+            "Could not load a valid model checkpoint. "
+            f"Checked: {candidate_paths}. Last error: {type(last_error).__name__}: {last_error}"
+        )
+    raise FileNotFoundError(
+        "No non-empty model checkpoint found. "
+        f"Checked: {candidate_paths}"
+    )
+
+model = model.to(DEVICE)
 model.eval()
 
 # Transform
@@ -38,19 +72,52 @@ transform = transforms.Compose([
 
 @app.get("/")
 def home():
-    return {"message": "API is running"}
+    return {
+        "message": "API is running",
+        "device": str(DEVICE),
+        "model_path": str(selected_model_path),
+    }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    image_bytes = await file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
 
-    img = transform(image).unsqueeze(0)
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file") from exc
+
+    img = transform(image).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
         outputs = model(img)
-        _, pred = torch.max(outputs, 1)
+        probs = torch.softmax(outputs, dim=1)
+        conf, pred = torch.max(probs, 1)
 
-    result = "AI Generated" if pred.item() == 0 else "Real Image"
+    pred_idx = pred.item()
+    confidence = float(conf.item())
+    probabilities = {
+        CLASS_NAMES[idx]: float(prob.item())
+        for idx, prob in enumerate(probs[0])
+    }
 
-    return {"prediction": result}
+    result = CLASS_NAMES[pred_idx]
+
+    return {
+        "prediction": result,
+        "class_id": pred_idx,
+        "confidence": round(confidence, 6),
+        "probabilities": probabilities,
+        "filename": file.filename,
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("api:app", host="127.0.0.1", port=8000)
