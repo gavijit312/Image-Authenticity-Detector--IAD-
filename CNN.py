@@ -14,6 +14,7 @@ EPOCHS = 25
 LR = 1e-4
 VAL_SPLIT = 0.2
 IMG_SIZE = 224
+CLASSIFIER_DROPOUT = 0.2
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_CUDA = DEVICE.type == "cuda"
@@ -145,7 +146,7 @@ def main():
 
     in_features = model.classifier[1].in_features
     model.classifier[1] = nn.Sequential(
-        nn.Dropout(0.4),
+        nn.Dropout(CLASSIFIER_DROPOUT),
         nn.Linear(in_features, 2)
     )
 
@@ -154,7 +155,7 @@ def main():
     
     
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.03)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.0)
     optimizer = optim.AdamW(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 

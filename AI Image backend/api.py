@@ -21,6 +21,7 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CLASS_NAMES = ["AI Generated", "Real Image"]
+INFERENCE_TEMPERATURE = 0.85
 
 # Load model
 model = models.efficientnet_b4(weights=None)
@@ -77,6 +78,7 @@ def home():
         "message": "API is running",
         "device": str(DEVICE),
         "model_path": str(selected_model_path),
+        "temperature": INFERENCE_TEMPERATURE,
     }
 
 @app.post("/predict")
@@ -102,16 +104,18 @@ async def predict(file: UploadFile = File(...)):
     img = torch.stack(tta_images).to(DEVICE)
 
     with torch.inference_mode():
-        outputs = model(img)
-        probs = torch.softmax(outputs, dim=1)
-        mean_probs = probs.mean(dim=0, keepdim=True)
-        conf, pred = torch.max(mean_probs, 1)
+        logits = model(img)
+        mean_logits = logits.mean(dim=0, keepdim=True)
+        raw_probs = torch.softmax(mean_logits, dim=1)
+        calibrated_probs = torch.softmax(mean_logits / INFERENCE_TEMPERATURE, dim=1)
+        conf, pred = torch.max(calibrated_probs, 1)
 
     pred_idx = pred.item()
     confidence = float(conf.item())
+    raw_confidence = float(raw_probs[0][pred_idx].item())
     probabilities = {
         CLASS_NAMES[idx]: float(prob.item())
-        for idx, prob in enumerate(mean_probs[0])
+        for idx, prob in enumerate(calibrated_probs[0])
     }
 
     result = CLASS_NAMES[pred_idx]
@@ -120,6 +124,7 @@ async def predict(file: UploadFile = File(...)):
         "prediction": result,
         "class_id": pred_idx,
         "confidence": round(confidence, 6),
+        "raw_confidence": round(raw_confidence, 6),
         "probabilities": probabilities,
         "filename": file.filename,
     }
