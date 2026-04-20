@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import transforms, models
 
 app = FastAPI()
@@ -64,7 +64,8 @@ model.eval()
 
 # Transform
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406],
                          [0.229, 0.224, 0.225])
@@ -89,21 +90,28 @@ async def predict(file: UploadFile = File(...)):
 
     try:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        image = ImageOps.exif_transpose(image)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid image file") from exc
 
-    img = transform(image).unsqueeze(0).to(DEVICE)
+    # Test-time augmentation helps stabilize prediction confidence.
+    tta_images = [
+        transform(image),
+        transform(ImageOps.mirror(image)),
+    ]
+    img = torch.stack(tta_images).to(DEVICE)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model(img)
         probs = torch.softmax(outputs, dim=1)
-        conf, pred = torch.max(probs, 1)
+        mean_probs = probs.mean(dim=0, keepdim=True)
+        conf, pred = torch.max(mean_probs, 1)
 
     pred_idx = pred.item()
     confidence = float(conf.item())
     probabilities = {
         CLASS_NAMES[idx]: float(prob.item())
-        for idx, prob in enumerate(probs[0])
+        for idx, prob in enumerate(mean_probs[0])
     }
 
     result = CLASS_NAMES[pred_idx]
